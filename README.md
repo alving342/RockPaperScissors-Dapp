@@ -19,3 +19,11 @@ npx hardhat compile
 npx hardhat node
 npx hardhat ignition deploy ignition/modules/RPSModule.js --network localhost
 ```
+
+# to run script
+```shell
+#run this in 1 terminal
+npx hardhat node
+
+#then run this in a second terminal
+npx hardhat run scripts/playRound.js --network localhost
