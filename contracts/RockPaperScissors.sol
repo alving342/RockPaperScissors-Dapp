@@ -18,8 +18,11 @@ contract RockPaperScissors {
         bool p2Revealed;
     }
 
+    uint256 public constant REVEAL_TIMEOUT = 2 minutes;
     uint256 public nextGameId;
+
     mapping(uint256 => Game) public games;
+    mapping(address => uint256) public balances;
 
     event GameCreated(uint256 indexed gameId, address indexed player1, uint256 bet);
     event GameJoined(uint256 indexed gameId, address indexed player2);
@@ -27,6 +30,7 @@ contract RockPaperScissors {
     event MoveRevealed(uint256 indexed gameId, address indexed player, Move move);
     event GameResolved(uint256 indexed gameId, address winner, uint256 amount);
     event GameCanceled(uint256 indexed gameId);
+    event Withdraw(address indexed player, uint256 amount);
 
     modifier onlyPlayers(uint256 gameId) {
         Game storage g = games[gameId];
@@ -84,6 +88,7 @@ contract RockPaperScissors {
 
         if (g.p1Commit != bytes32(0) && g.p2Commit != bytes32(0)) {
             g.state = GameState.Revealing;
+            g.deadline = block.timestamp + REVEAL_TIMEOUT;
         }
 
         emit MoveCommitted(gameId, msg.sender);
@@ -100,18 +105,16 @@ contract RockPaperScissors {
         );
 
         Game storage g = games[gameId];
-        bytes32 expected;
+        bytes32 expected = keccak256(abi.encodePacked(move, salt));
 
         if (msg.sender == g.player1) {
             require(!g.p1Revealed, "Already revealed");
-            expected = keccak256(abi.encodePacked(move, salt));
-            require(expected == g.p1Commit, "Commitment mismatch");
+            require(expected == g.p1Commit, "Commit mismatch");
             g.p1Move = move;
             g.p1Revealed = true;
         } else {
             require(!g.p2Revealed, "Already revealed");
-            expected = keccak256(abi.encodePacked(move, salt));
-            require(expected == g.p2Commit, "Commitment mismatch");
+            require(expected == g.p2Commit, "Commit mismatch");
             g.p2Move = move;
             g.p2Revealed = true;
         }
@@ -123,19 +126,52 @@ contract RockPaperScissors {
         }
     }
 
+    function claimTimeout(uint256 gameId)
+        external
+        onlyPlayers(gameId)
+        inState(gameId, GameState.Revealing)
+    {
+        Game storage g = games[gameId];
+        require(block.timestamp >= g.deadline, "Too early");
+
+        address winner;
+
+        if (g.p1Revealed && !g.p2Revealed) winner = g.player1;
+        else if (g.p2Revealed && !g.p1Revealed) winner = g.player2;
+        else {
+            // Neither revealed → refund both
+            balances[g.player1] += g.bet;
+            balances[g.player2] += g.bet;
+            g.state = GameState.Finished;
+            emit GameCanceled(gameId);
+            return;
+        }
+
+        balances[winner] += 2 * g.bet;
+        g.state = GameState.Finished;
+        emit GameResolved(gameId, winner, 2 * g.bet);
+    }
+
+    function withdraw() external {
+        uint256 amount = balances[msg.sender];
+        require(amount > 0, "Nothing to withdraw");
+
+        balances[msg.sender] = 0;
+        (bool ok, ) = msg.sender.call{value: amount}("");
+        require(ok, "Withdraw failed");
+
+        emit Withdraw(msg.sender, amount);
+    }
+
     function _resolve(uint256 gameId) internal {
         Game storage g = games[gameId];
-        require(g.state == GameState.Revealing, "Not revealing");
 
         address winner;
 
         if (g.p1Move == g.p2Move) {
-            (bool ok1, ) = g.player1.call{value: g.bet}("");
-            require(ok1, "P1 refund failed");
-
-            (bool ok2, ) = g.player2.call{value: g.bet}("");
-            require(ok2, "P2 refund failed");
-
+            // Tie → refund both
+            balances[g.player1] += g.bet;
+            balances[g.player2] += g.bet;
             emit GameCanceled(gameId);
         } else if (
             (g.p1Move == Move.Rock     && g.p2Move == Move.Scissors) ||
@@ -147,11 +183,9 @@ contract RockPaperScissors {
             winner = g.player2;
         }
 
-        if (winner != address(0) && g.p1Move != g.p2Move) {
-            uint256 pot = 2 * g.bet;
-            (bool ok, ) = winner.call{value: pot}("");
-            require(ok, "Payout failed");
-            emit GameResolved(gameId, winner, pot);
+        if (winner != address(0)) {
+            balances[winner] += 2 * g.bet;
+            emit GameResolved(gameId, winner, 2 * g.bet);
         }
 
         g.state = GameState.Finished;

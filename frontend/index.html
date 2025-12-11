@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Rock Paper Scissors DApp (Student Version)</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.14.0/dist/ethers.umd.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f0f0f0;
+      padding: 20px;
+      max-width: 700px;
+      margin: auto;
+    }
+    h2 { margin-top: 28px; }
+    input, button, select {
+      padding: 8px;
+      margin-top: 6px;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    button:hover { background: #2563eb; }
+    .box {
+      background: white;
+      padding: 15px;
+      border: 1px solid #ddd;
+      margin-top: 20px;
+    }
+    .status {
+      font-size: 0.9rem;
+      color: #444;
+      margin-top: 8px;
+      white-space: pre-line;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Rock Paper Scissors (Commit–Reveal)</h1>
+<button id="connectBtn">Connect MetaMask</button>
+<p><b>Account:</b> <span id="account">Not connected</span></p>
+
+<div class="box">
+  <h2>1. Contract Setup</h2>
+  <label>Contract Address:</label>
+  <input id="contractAddress" placeholder="0x..." />
+
+  <button id="loadContractBtn">Load Contract</button>
+  <div class="status" id="contractStatus"></div>
+</div>
+
+<div class="box">
+  <h2>2. Create or Join Game</h2>
+
+  <label>Opponent Address:</label>
+  <input id="opponent" placeholder="0xOpponent..." />
+
+  <label>Bet (ETH):</label>
+  <input id="betAmount" type="number" value="1" />
+
+  <button id="createBtn">Create Game</button>
+
+  <label style="margin-top: 20px;">Join Game ID:</label>
+  <input id="joinId" type="number" value="0" />
+
+  <label>Bet (ETH):</label>
+  <input id="joinBet" type="number" value="1" />
+
+  <button id="joinBtn">Join Game</button>
+
+  <div class="status" id="setupStatus"></div>
+</div>
+
+<div class="box">
+  <h2>3. Commit & Reveal Move</h2>
+
+  <label>Game ID:</label>
+  <input id="gameId" type="number" value="0" />
+
+  <label>Choose Move:</label>
+  <select id="moveSelect">
+    <option value="1">Rock</option>
+    <option value="2">Paper</option>
+    <option value="3">Scissors</option>
+  </select>
+
+  <button id="commitBtn">Commit Move</button>
+  <button id="revealBtn">Reveal Move</button>
+
+  <div class="status" id="crStatus"></div>
+</div>
+
+<div class="box">
+  <h2>4. Timeout & Withdraw</h2>
+
+  <label>Game ID:</label>
+  <input id="timeoutId" type="number" value="0" />
+
+  <button id="timeoutBtn">Claim Timeout</button>
+  <button id="withdrawBtn">Withdraw Winnings</button>
+
+  <div class="status" id="twStatus"></div>
+</div>
+
+
+<script>
+  const { ethers } = window.ethers;
+
+  let provider;
+  let signer;
+  let rps;
+
+  const secrets = {}; // gameId + account -> { move, salt }
+
+  const ABI = [
+    "function createGame(address opponent) external payable returns (uint256)",
+    "function joinGame(uint256 gameId) external payable",
+    "function commitMove(uint256 gameId, bytes32 commitment) external",
+    "function revealMove(uint256 gameId, uint8 move, bytes32 salt) external",
+    "function claimTimeout(uint256 gameId) external",
+    "function withdraw() external",
+    "function nextGameId() view returns (uint256)"
+  ];
+
+  async function connect() {
+    provider = new ethers.BrowserProvider(window.ethereum);
+    await provider.send("eth_requestAccounts", []);
+    signer = await provider.getSigner();
+    document.getElementById("account").innerText = await signer.getAddress();
+  }
+  document.getElementById("connectBtn").onclick = connect;
+
+  document.getElementById("loadContractBtn").onclick = () => {
+  try {
+    if (!signer) {
+      document.getElementById("contractStatus").innerText =
+        "Please connect MetaMask first.";
+      return;
+    }
+    const addr = document.getElementById("contractAddress").value.trim();
+    if (!addr || !ethers.isAddress(addr)) {
+      document.getElementById("contractStatus").innerText =
+        "Please enter a valid contract address.";
+      return;
+    }
+
+    rps = new ethers.Contract(addr, ABI, signer);
+    document.getElementById("contractStatus").innerText =
+      "Contract loaded successfully.";
+  } catch (e) {
+    document.getElementById("contractStatus").innerText = e.message;
+  }
+};
+
+
+  document.getElementById("createBtn").onclick = async () => {
+    try {
+      const opp = document.getElementById("opponent").value;
+      const bet = ethers.parseEther(document.getElementById("betAmount").value);
+
+      const tx = await rps.createGame(opp, { value: bet });
+      await tx.wait();
+
+      document.getElementById("setupStatus").innerText = "Game created!";
+    } catch (e) {
+      document.getElementById("setupStatus").innerText = e.message;
+    }
+  };
+
+  document.getElementById("joinBtn").onclick = async () => {
+    try {
+      const id = document.getElementById("joinId").value;
+      const bet = ethers.parseEther(document.getElementById("joinBet").value);
+
+      const tx = await rps.joinGame(id, { value: bet });
+      await tx.wait();
+
+      document.getElementById("setupStatus").innerText = "Game joined!";
+    } catch (e) {
+      document.getElementById("setupStatus").innerText = e.message;
+    }
+  };
+
+  document.getElementById("commitBtn").onclick = async () => {
+    try {
+      const id = Number(document.getElementById("gameId").value);
+    const move = Number(document.getElementById("moveSelect").value);
+
+    const salt = ethers.hexlify(ethers.randomBytes(32));
+    const commitment = ethers.keccak256(
+    ethers.solidityPacked(["uint8", "bytes32"], [move, salt])
+    );
+
+    const addr = (await signer.getAddress()).toLowerCase();
+    const key = id + ":" + addr;
+    secrets[key] = { move, salt };
+
+      const tx = await rps.commitMove(id, commitment);
+      await tx.wait();
+
+      document.getElementById("crStatus").innerText = "Move committed.";
+    } catch (e) {
+      document.getElementById("crStatus").innerText = e.message;
+    }
+  };
+
+  document.getElementById("revealBtn").onclick = async () => {
+    try {
+        const id = Number(document.getElementById("gameId").value);
+        const addr = (await signer.getAddress()).toLowerCase();
+        const key = id + ":" + addr;
+        const { move, salt } = secrets[key] || {};
+
+
+      if (!move || !salt) {
+        document.getElementById("crStatus").innerText =
+          "You must commit from this browser first.";
+        return;
+      }
+
+      const tx = await rps.revealMove(id, move, salt);
+      await tx.wait();
+
+      document.getElementById("crStatus").innerText = "Move revealed.";
+    } catch (e) {
+      document.getElementById("crStatus").innerText = e.message;
+    }
+  };
+
+  document.getElementById("timeoutBtn").onclick = async () => {
+    try {
+      const id = document.getElementById("timeoutId").value;
+      const tx = await rps.claimTimeout(id);
+      await tx.wait();
+
+      document.getElementById("twStatus").innerText = "Timeout claimed.";
+    } catch (e) {
+      document.getElementById("twStatus").innerText = e.message;
+    }
+  };
+
+  document.getElementById("withdrawBtn").onclick = async () => {
+    try {
+      const tx = await rps.withdraw();
+      await tx.wait();
+
+      document.getElementById("twStatus").innerText = "Withdraw complete.";
+    } catch (e) {
+      document.getElementById("twStatus").innerText = e.message;
+    }
+  };
+</script>
+
+</body>
+</html>
